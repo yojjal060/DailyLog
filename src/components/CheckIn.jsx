@@ -41,6 +41,59 @@ export default function CheckIn() {
     }).catch(() => {})
   }, [])
 
+  if (alreadyCheckedIn) {
+    const energyInfo = ENERGY_LEVELS.find(l => l.value === energy)
+    const gymInfo = GYM_OPTIONS.find(o => o.value === gym)
+
+    return (
+      <div className="checkin-page">
+        <div className="page-header">
+          <h1><Crosshair size={28} style={{ display: 'inline', verticalAlign: 'middle', marginRight: '0.5rem' }} />Daily Check-In</h1>
+          <p>You've already checked in today.</p>
+        </div>
+
+        <div className="checkin-step animate-in">
+          <div className="checkin-step__header">
+            <div className="checkin-step__icon">
+              <Check size={24} />
+            </div>
+            <h2 className="checkin-step__title">Checked In For Today</h2>
+            <p className="checkin-step__subtitle">Come back tomorrow for your next check-in.</p>
+          </div>
+
+          <div className="checkin-step__content">
+            <div className="checkin-summary">
+              <div className="checkin-summary__item">
+                <span>Energy</span>
+                <span>{energyInfo?.emoji} {energyInfo?.label}</span>
+              </div>
+              <div className="checkin-summary__item">
+                <span>Gym</span>
+                <span>{gymInfo?.emoji} {gymInfo?.label}</span>
+              </div>
+              <div className="checkin-summary__item">
+                <span>Sleep</span>
+                <span>🛏️ {sleepHours}{sleepHours === 8 ? '+' : ''} hours</span>
+              </div>
+            </div>
+
+            {moodNote ? (
+              <p className="text-muted mt-md">Note: {moodNote}</p>
+            ) : null}
+
+            <button
+              className="btn btn-primary btn-lg w-full mt-lg"
+              onClick={() => navigate('/mission')}
+            >
+              Go to Mission
+              <ChevronRight size={18} />
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   async function handleSubmit() {
     setSaving(true)
     try {
@@ -155,7 +208,7 @@ export default function CheckIn() {
             onClick={handleSubmit}
             disabled={saving}
           >
-            {saving ? 'Saving...' : alreadyCheckedIn ? 'Update & Get Mission' : 'Get My Mission'}
+            {saving ? 'Saving...' : 'Get My Mission'}
             <ChevronRight size={18} />
           </button>
         </div>
@@ -170,7 +223,7 @@ export default function CheckIn() {
     <div className="checkin-page">
       <div className="page-header">
         <h1><Crosshair size={28} style={{ display: 'inline', verticalAlign: 'middle', marginRight: '0.5rem' }} />Daily Check-In</h1>
-        <p>{alreadyCheckedIn ? "You've already checked in today. Update if needed." : "3 quick questions. Be honest."}</p>
+        <p>3 quick questions. Be honest.</p>
       </div>
 
       {/* Progress dots */}

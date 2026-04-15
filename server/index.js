@@ -174,15 +174,16 @@ setupDatabase().then(() => {
     const { date, energy, gym, sleep_hours, mood_note } = req.body;
     const d = date || new Date().toISOString().split('T')[0];
     try {
-      await dbRun(`
-        INSERT INTO check_ins (date, energy, gym, sleep_hours, mood_note)
-        VALUES (?, ?, ?, ?, ?)
-        ON DUPLICATE KEY UPDATE
-          energy = VALUES(energy),
-          gym = VALUES(gym),
-          sleep_hours = VALUES(sleep_hours),
-          mood_note = VALUES(mood_note)
-      `, [d, energy, gym || 'no', sleep_hours, mood_note || '']);
+      const existing = await dbGet('SELECT id FROM check_ins WHERE date = ?', [d]);
+      if (existing) {
+        return res.status(409).json({ error: 'Already checked in for this day' });
+      }
+
+      await dbRun(
+        'INSERT INTO check_ins (date, energy, gym, sleep_hours, mood_note) VALUES (?, ?, ?, ?, ?)',
+        [d, energy, gym || 'no', sleep_hours, mood_note || '']
+      );
+
       const row = await dbGet('SELECT * FROM check_ins WHERE date = ?', [d]);
       res.json(row);
     } catch(e) {
