@@ -1,0 +1,21 @@
+node_modules/
+dist/
+
+# Local env files
+.env
+.env.*
+!.env.example
+
+# Local SQLite files
+warroom.db
+warroom.db-shm
+warroom.db-wal
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+claude.md
