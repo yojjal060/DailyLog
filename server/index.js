@@ -1,13 +1,6 @@
 import express from 'express';
 import cors from 'cors';
-import sqlite3 from 'sqlite3';
-import { open } from 'sqlite';
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import mysql from 'mysql2/promise';
 
 const app = express();
 const PORT = Number(process.env.PORT || 3001);
@@ -19,106 +12,129 @@ const corsOrigin = process.env.CORS_ORIGIN
 app.use(cors(corsOrigin ? { origin: corsOrigin } : {}));
 app.use(express.json());
 
-const dbPath = process.env.DB_PATH
-  ? path.resolve(process.env.DB_PATH)
-  : path.join(__dirname, '..', 'warroom.db');
+const missingDbEnv = ['DB_HOST', 'DB_USER', 'DB_PASSWORD', 'DB_NAME'].filter(key => !process.env[key]);
+if (missingDbEnv.length > 0) {
+  console.error(`Missing required database env vars: ${missingDbEnv.join(', ')}`);
+  process.exit(1);
+}
 
-fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+const pool = mysql.createPool({
+  host: process.env.DB_HOST,
+  port: Number(process.env.DB_PORT || 4000),
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME,
+  waitForConnections: true,
+  connectionLimit: Number(process.env.DB_CONNECTION_LIMIT || 10),
+  queueLimit: 0,
+  ssl: process.env.DB_SSL === 'false' ? undefined : { minVersion: 'TLSv1.2', rejectUnauthorized: true }
+});
 
-let db;
+async function dbAll(sql, params = []) {
+  const [rows] = await pool.query(sql, params);
+  return rows;
+}
+
+async function dbGet(sql, params = []) {
+  const rows = await dbAll(sql, params);
+  return rows[0] || null;
+}
+
+async function dbRun(sql, params = []) {
+  const [result] = await pool.query(sql, params);
+  return result;
+}
+
+function dateDaysAgo(days) {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() - days);
+  return d.toISOString().split('T')[0];
+}
 
 async function setupDatabase() {
-  db = await open({
-    filename: dbPath,
-    driver: sqlite3.Database
-  });
-
-  await db.exec('PRAGMA journal_mode = WAL;');
-  await db.exec('PRAGMA foreign_keys = ON;');
-
   // ─── Schema ────────────────────────────────────────────────
-  await db.exec(`
+  await dbRun(`
     CREATE TABLE IF NOT EXISTS check_ins (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      date TEXT UNIQUE NOT NULL,
-      energy INTEGER NOT NULL CHECK(energy BETWEEN 1 AND 5),
-      gym TEXT NOT NULL DEFAULT 'no' CHECK(gym IN ('yes','no','later')),
-      sleep_hours REAL NOT NULL,
-      mood_note TEXT DEFAULT '',
-      created_at TEXT DEFAULT (datetime('now','localtime'))
+      id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+      date DATE UNIQUE NOT NULL,
+      energy TINYINT NOT NULL,
+      gym VARCHAR(10) NOT NULL DEFAULT 'no',
+      sleep_hours DECIMAL(4,1) NOT NULL,
+      mood_note TEXT,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
 
     CREATE TABLE IF NOT EXISTS mission_pool (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
       title TEXT NOT NULL,
-      description TEXT DEFAULT '',
-      category TEXT NOT NULL,
-      difficulty INTEGER NOT NULL CHECK(difficulty BETWEEN 1 AND 3),
-      active INTEGER DEFAULT 1
+      description TEXT,
+      category VARCHAR(100) NOT NULL,
+      difficulty TINYINT NOT NULL,
+      active TINYINT(1) NOT NULL DEFAULT 1
     );
 
     CREATE TABLE IF NOT EXISTS missions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      date TEXT NOT NULL,
-      pool_id INTEGER,
+      id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+      date DATE NOT NULL,
+      pool_id BIGINT UNSIGNED,
       title TEXT NOT NULL,
-      description TEXT DEFAULT '',
-      category TEXT NOT NULL,
-      difficulty INTEGER NOT NULL,
-      estimated_blocks INTEGER DEFAULT 2,
-      status TEXT DEFAULT 'active' CHECK(status IN ('active','completed','skipped')),
-      pomodoros_used INTEGER DEFAULT 0,
-      completed_at TEXT,
-      created_at TEXT DEFAULT (datetime('now','localtime')),
+      description TEXT,
+      category VARCHAR(100) NOT NULL,
+      difficulty TINYINT NOT NULL,
+      estimated_blocks INT NOT NULL DEFAULT 2,
+      status VARCHAR(20) NOT NULL DEFAULT 'active',
+      pomodoros_used INT NOT NULL DEFAULT 0,
+      completed_at DATETIME NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (pool_id) REFERENCES mission_pool(id)
     );
 
     CREATE TABLE IF NOT EXISTS wins (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      date TEXT NOT NULL,
+      id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+      date DATE NOT NULL,
       text TEXT NOT NULL,
-      mission_id INTEGER,
-      created_at TEXT DEFAULT (datetime('now','localtime')),
+      mission_id BIGINT UNSIGNED,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (mission_id) REFERENCES missions(id)
     );
 
     CREATE TABLE IF NOT EXISTS pomodoro_sessions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      date TEXT NOT NULL,
-      mission_id INTEGER,
-      duration_minutes INTEGER DEFAULT 25,
-      completed INTEGER DEFAULT 0,
-      started_at TEXT DEFAULT (datetime('now','localtime')),
-      ended_at TEXT,
+      id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+      date DATE NOT NULL,
+      mission_id BIGINT UNSIGNED,
+      duration_minutes INT NOT NULL DEFAULT 25,
+      completed TINYINT(1) NOT NULL DEFAULT 0,
+      started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      ended_at DATETIME NULL,
       FOREIGN KEY (mission_id) REFERENCES missions(id)
     );
 
     CREATE TABLE IF NOT EXISTS streaks (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      type TEXT UNIQUE DEFAULT 'daily',
-      current_count INTEGER DEFAULT 0,
-      longest_count INTEGER DEFAULT 0,
-      last_active_date TEXT
+      id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+      type VARCHAR(20) UNIQUE NOT NULL,
+      current_count INT NOT NULL DEFAULT 0,
+      longest_count INT NOT NULL DEFAULT 0,
+      last_active_date DATE NULL
     );
 
     CREATE TABLE IF NOT EXISTS settings (
-      id INTEGER PRIMARY KEY CHECK(id = 1),
-      focus_duration INTEGER DEFAULT 25,
-      break_duration INTEGER DEFAULT 5,
-      name TEXT DEFAULT 'Yojjal',
-      goals_text TEXT DEFAULT 'Get job-ready in coding'
+      id TINYINT PRIMARY KEY,
+      focus_duration INT NOT NULL DEFAULT 25,
+      break_duration INT NOT NULL DEFAULT 5,
+      name VARCHAR(255) NOT NULL DEFAULT 'Yojjal',
+      goals_text TEXT
     );
   `);
 
   // ─── Seed defaults ─────────────────────────────────────────
-  const streakExists = await db.get('SELECT COUNT(*) as c FROM streaks');
+  const streakExists = await dbGet('SELECT COUNT(*) as c FROM streaks');
   if (streakExists.c === 0) {
-    await db.run('INSERT INTO streaks (type, current_count, longest_count) VALUES (?, 0, 0)', ['daily']);
+    await dbRun('INSERT INTO streaks (type, current_count, longest_count) VALUES (?, 0, 0)', ['daily']);
   }
 
-  const settingsExists = await db.get('SELECT COUNT(*) as c FROM settings');
+  const settingsExists = await dbGet('SELECT COUNT(*) as c FROM settings');
   if (settingsExists.c === 0) {
-    await db.run('INSERT INTO settings (id, name) VALUES (1, ?)', ['Yojjal']);
+    await dbRun('INSERT INTO settings (id, name) VALUES (1, ?)', ['Yojjal']);
   }
 }
 
@@ -126,20 +142,20 @@ setupDatabase().then(() => {
   // ─── API Routes ────────────────────────────────────────────
 
   app.get('/api/health', async (req, res) => {
-    const now = await db.get("SELECT datetime('now') as now");
+    const now = await dbGet('SELECT NOW() as now');
     res.json({ ok: true, now: now?.now || null });
   });
 
   // --- Check-ins ---
   app.get('/api/checkins', async (req, res) => {
     const { limit = 30, offset = 0 } = req.query;
-    const rows = await db.all('SELECT * FROM check_ins ORDER BY date DESC LIMIT ? OFFSET ?', [Number(limit), Number(offset)]);
+    const rows = await dbAll('SELECT * FROM check_ins ORDER BY date DESC LIMIT ? OFFSET ?', [Number(limit), Number(offset)]);
     res.json(rows);
   });
 
   app.get('/api/checkins/today', async (req, res) => {
     const today = new Date().toISOString().split('T')[0];
-    const row = await db.get('SELECT * FROM check_ins WHERE date = ?', [today]);
+    const row = await dbGet('SELECT * FROM check_ins WHERE date = ?', [today]);
     res.json(row || null);
   });
 
@@ -147,16 +163,16 @@ setupDatabase().then(() => {
     const { date, energy, gym, sleep_hours, mood_note } = req.body;
     const d = date || new Date().toISOString().split('T')[0];
     try {
-      await db.run(`
+      await dbRun(`
         INSERT INTO check_ins (date, energy, gym, sleep_hours, mood_note)
         VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(date) DO UPDATE SET
-          energy = excluded.energy,
-          gym = excluded.gym,
-          sleep_hours = excluded.sleep_hours,
-          mood_note = excluded.mood_note
+        ON DUPLICATE KEY UPDATE
+          energy = VALUES(energy),
+          gym = VALUES(gym),
+          sleep_hours = VALUES(sleep_hours),
+          mood_note = VALUES(mood_note)
       `, [d, energy, gym || 'no', sleep_hours, mood_note || '']);
-      const row = await db.get('SELECT * FROM check_ins WHERE date = ?', [d]);
+      const row = await dbGet('SELECT * FROM check_ins WHERE date = ?', [d]);
       res.json(row);
     } catch(e) {
       res.status(400).json({ error: e.message });
@@ -166,13 +182,13 @@ setupDatabase().then(() => {
   // --- Missions ---
   app.get('/api/missions/today', async (req, res) => {
     const today = new Date().toISOString().split('T')[0];
-    const row = await db.get('SELECT * FROM missions WHERE date = ? ORDER BY id DESC LIMIT 1', [today]);
+    const row = await dbGet('SELECT * FROM missions WHERE date = ? ORDER BY id DESC LIMIT 1', [today]);
     res.json(row || null);
   });
 
   app.get('/api/missions', async (req, res) => {
     const { limit = 30 } = req.query;
-    const rows = await db.all('SELECT * FROM missions ORDER BY date DESC LIMIT ?', [Number(limit)]);
+    const rows = await dbAll('SELECT * FROM missions ORDER BY date DESC LIMIT ?', [Number(limit)]);
     res.json(rows);
   });
 
@@ -180,11 +196,11 @@ setupDatabase().then(() => {
     const { date, pool_id, title, description, category, difficulty, estimated_blocks } = req.body;
     const d = date || new Date().toISOString().split('T')[0];
     try {
-      const result = await db.run(`
+      const result = await dbRun(`
         INSERT INTO missions (date, pool_id, title, description, category, difficulty, estimated_blocks)
         VALUES (?, ?, ?, ?, ?, ?, ?)
       `, [d, pool_id || null, title, description || '', category, difficulty, estimated_blocks || 2]);
-      const row = await db.get('SELECT * FROM missions WHERE id = ?', [result.lastID]);
+      const row = await dbGet('SELECT * FROM missions WHERE id = ?', [result.insertId]);
       res.json(row);
     } catch(e) {
       res.status(400).json({ error: e.message });
@@ -196,12 +212,12 @@ setupDatabase().then(() => {
     const updates = [];
     const params = [];
     if (status) { updates.push('status = ?'); params.push(status); }
-    if (status === 'completed') { updates.push("completed_at = datetime('now','localtime')"); }
+    if (status === 'completed') { updates.push('completed_at = NOW()'); }
     if (pomodoros_used !== undefined) { updates.push('pomodoros_used = ?'); params.push(pomodoros_used); }
     if (updates.length === 0) return res.status(400).json({ error: 'Nothing to update' });
     params.push(req.params.id);
-    await db.run(`UPDATE missions SET ${updates.join(', ')} WHERE id = ?`, params);
-    const row = await db.get('SELECT * FROM missions WHERE id = ?', [req.params.id]);
+    await dbRun(`UPDATE missions SET ${updates.join(', ')} WHERE id = ?`, params);
+    const row = await dbGet('SELECT * FROM missions WHERE id = ?', [req.params.id]);
     res.json(row);
   });
 
@@ -209,17 +225,17 @@ setupDatabase().then(() => {
   app.get('/api/wins', async (req, res) => {
     const { date, limit = 50 } = req.query;
     if (date) {
-      const rows = await db.all('SELECT * FROM wins WHERE date = ? ORDER BY created_at DESC', [date]);
+      const rows = await dbAll('SELECT * FROM wins WHERE date = ? ORDER BY created_at DESC', [date]);
       res.json(rows);
     } else {
-      const rows = await db.all('SELECT * FROM wins ORDER BY created_at DESC LIMIT ?', [Number(limit)]);
+      const rows = await dbAll('SELECT * FROM wins ORDER BY created_at DESC LIMIT ?', [Number(limit)]);
       res.json(rows);
     }
   });
 
   app.get('/api/wins/today', async (req, res) => {
     const today = new Date().toISOString().split('T')[0];
-    const rows = await db.all('SELECT * FROM wins WHERE date = ? ORDER BY created_at ASC', [today]);
+    const rows = await dbAll('SELECT * FROM wins WHERE date = ? ORDER BY created_at ASC', [today]);
     res.json(rows);
   });
 
@@ -227,8 +243,8 @@ setupDatabase().then(() => {
     const { date, text, mission_id } = req.body;
     const d = date || new Date().toISOString().split('T')[0];
     try {
-      const result = await db.run('INSERT INTO wins (date, text, mission_id) VALUES (?, ?, ?)', [d, text, mission_id || null]);
-      const row = await db.get('SELECT * FROM wins WHERE id = ?', [result.lastID]);
+      const result = await dbRun('INSERT INTO wins (date, text, mission_id) VALUES (?, ?, ?)', [d, text, mission_id || null]);
+      const row = await dbGet('SELECT * FROM wins WHERE id = ?', [result.insertId]);
       res.json(row);
     } catch(e) {
       res.status(400).json({ error: e.message });
@@ -239,10 +255,10 @@ setupDatabase().then(() => {
   app.get('/api/pomodoros', async (req, res) => {
     const { date, limit = 50 } = req.query;
     if (date) {
-      const rows = await db.all('SELECT * FROM pomodoro_sessions WHERE date = ? ORDER BY started_at DESC', [date]);
+      const rows = await dbAll('SELECT * FROM pomodoro_sessions WHERE date = ? ORDER BY started_at DESC', [date]);
       res.json(rows);
     } else {
-      const rows = await db.all('SELECT * FROM pomodoro_sessions ORDER BY started_at DESC LIMIT ?', [Number(limit)]);
+      const rows = await dbAll('SELECT * FROM pomodoro_sessions ORDER BY started_at DESC LIMIT ?', [Number(limit)]);
       res.json(rows);
     }
   });
@@ -250,27 +266,27 @@ setupDatabase().then(() => {
   app.post('/api/pomodoros', async (req, res) => {
     const { date, mission_id, duration_minutes } = req.body;
     const d = date || new Date().toISOString().split('T')[0];
-    const result = await db.run('INSERT INTO pomodoro_sessions (date, mission_id, duration_minutes) VALUES (?, ?, ?)', [d, mission_id || null, duration_minutes || 25]);
-    const row = await db.get('SELECT * FROM pomodoro_sessions WHERE id = ?', [result.lastID]);
+    const result = await dbRun('INSERT INTO pomodoro_sessions (date, mission_id, duration_minutes) VALUES (?, ?, ?)', [d, mission_id || null, duration_minutes || 25]);
+    const row = await dbGet('SELECT * FROM pomodoro_sessions WHERE id = ?', [result.insertId]);
     res.json(row);
   });
 
   app.patch('/api/pomodoros/:id', async (req, res) => {
     const { completed } = req.body;
-    await db.run("UPDATE pomodoro_sessions SET completed = ?, ended_at = datetime('now','localtime') WHERE id = ?", [completed ? 1 : 0, req.params.id]);
-    const row = await db.get('SELECT * FROM pomodoro_sessions WHERE id = ?', [req.params.id]);
+    await dbRun('UPDATE pomodoro_sessions SET completed = ?, ended_at = NOW() WHERE id = ?', [completed ? 1 : 0, req.params.id]);
+    const row = await dbGet('SELECT * FROM pomodoro_sessions WHERE id = ?', [req.params.id]);
     res.json(row);
   });
 
   // --- Streaks ---
   app.get('/api/streaks', async (req, res) => {
-    const row = await db.get('SELECT * FROM streaks WHERE type = ?', ['daily']);
+    const row = await dbGet('SELECT * FROM streaks WHERE type = ?', ['daily']);
     res.json(row);
   });
 
   app.post('/api/streaks/update', async (req, res) => {
     const today = new Date().toISOString().split('T')[0];
-    const streak = await db.get('SELECT * FROM streaks WHERE type = ?', ['daily']);
+    const streak = await dbGet('SELECT * FROM streaks WHERE type = ?', ['daily']);
     
     if (streak.last_active_date === today) {
       return res.json(streak);
@@ -285,9 +301,9 @@ setupDatabase().then(() => {
     }
 
     const newLongest = Math.max(newCount, streak.longest_count);
-    await db.run('UPDATE streaks SET current_count = ?, longest_count = ?, last_active_date = ? WHERE type = ?', [newCount, newLongest, today, 'daily']);
+    await dbRun('UPDATE streaks SET current_count = ?, longest_count = ?, last_active_date = ? WHERE type = ?', [newCount, newLongest, today, 'daily']);
     
-    const updated = await db.get('SELECT * FROM streaks WHERE type = ?', ['daily']);
+    const updated = await dbGet('SELECT * FROM streaks WHERE type = ?', ['daily']);
     res.json(updated);
   });
 
@@ -295,18 +311,18 @@ setupDatabase().then(() => {
   app.get('/api/mission-pool', async (req, res) => {
     const { category } = req.query;
     if (category) {
-      const rows = await db.all('SELECT * FROM mission_pool WHERE category = ? AND active = 1', [category]);
+      const rows = await dbAll('SELECT * FROM mission_pool WHERE category = ? AND active = 1', [category]);
       res.json(rows);
     } else {
-      const rows = await db.all('SELECT * FROM mission_pool WHERE active = 1 ORDER BY category, difficulty');
+      const rows = await dbAll('SELECT * FROM mission_pool WHERE active = 1 ORDER BY category, difficulty');
       res.json(rows);
     }
   });
 
   app.post('/api/mission-pool', async (req, res) => {
     const { title, description, category, difficulty } = req.body;
-    const result = await db.run('INSERT INTO mission_pool (title, description, category, difficulty) VALUES (?, ?, ?, ?)', [title, description || '', category, difficulty]);
-    const row = await db.get('SELECT * FROM mission_pool WHERE id = ?', [result.lastID]);
+    const result = await dbRun('INSERT INTO mission_pool (title, description, category, difficulty) VALUES (?, ?, ?, ?)', [title, description || '', category, difficulty]);
+    const row = await dbGet('SELECT * FROM mission_pool WHERE id = ?', [result.insertId]);
     res.json(row);
   });
 
@@ -319,20 +335,21 @@ setupDatabase().then(() => {
     if (category !== undefined) { updates.push('category = ?'); params.push(category); }
     if (difficulty !== undefined) { updates.push('difficulty = ?'); params.push(difficulty); }
     if (active !== undefined) { updates.push('active = ?'); params.push(active ? 1 : 0); }
+    if (updates.length === 0) return res.status(400).json({ error: 'Nothing to update' });
     params.push(req.params.id);
-    await db.run(`UPDATE mission_pool SET ${updates.join(', ')} WHERE id = ?`, params);
-    const row = await db.get('SELECT * FROM mission_pool WHERE id = ?', [req.params.id]);
+    await dbRun(`UPDATE mission_pool SET ${updates.join(', ')} WHERE id = ?`, params);
+    const row = await dbGet('SELECT * FROM mission_pool WHERE id = ?', [req.params.id]);
     res.json(row);
   });
 
   app.delete('/api/mission-pool/:id', async (req, res) => {
-    await db.run('DELETE FROM mission_pool WHERE id = ?', [req.params.id]);
+    await dbRun('DELETE FROM mission_pool WHERE id = ?', [req.params.id]);
     res.json({ success: true });
   });
 
   // --- Settings ---
   app.get('/api/settings', async (req, res) => {
-    const row = await db.get('SELECT * FROM settings WHERE id = 1');
+    const row = await dbGet('SELECT * FROM settings WHERE id = 1');
     res.json(row);
   });
 
@@ -345,43 +362,46 @@ setupDatabase().then(() => {
     if (name !== undefined) { updates.push('name = ?'); params.push(name); }
     if (goals_text !== undefined) { updates.push('goals_text = ?'); params.push(goals_text); }
     if (updates.length === 0) return res.status(400).json({ error: 'Nothing to update' });
-    await db.run(`UPDATE settings SET ${updates.join(', ')} WHERE id = 1`, params);
-    const row = await db.get('SELECT * FROM settings WHERE id = 1');
+    await dbRun(`UPDATE settings SET ${updates.join(', ')} WHERE id = 1`, params);
+    const row = await dbGet('SELECT * FROM settings WHERE id = 1');
     res.json(row);
   });
 
   // --- Dashboard stats ---
   app.get('/api/stats', async (req, res) => {
-    const today = new Date().toISOString().split('T')[0];
+    const last30Days = dateDaysAgo(30);
+    const last180Days = dateDaysAgo(180);
+    const thisWeekStart = dateDaysAgo(7);
+    const lastWeekStart = dateDaysAgo(14);
     
-    const totalWinsRes = await db.get('SELECT COUNT(*) as count FROM wins');
-    const totalMissionsRes = await db.get("SELECT COUNT(*) as count FROM missions WHERE status = 'completed'");
-    const avgEnergyRes = await db.get('SELECT AVG(energy) as avg FROM check_ins');
-    const streak = await db.get('SELECT * FROM streaks WHERE type = ?', ['daily']);
-    const totalPomodorosRes = await db.get('SELECT COUNT(*) as count FROM pomodoro_sessions WHERE completed = 1');
+    const totalWinsRes = await dbGet('SELECT COUNT(*) as count FROM wins');
+    const totalMissionsRes = await dbGet("SELECT COUNT(*) as count FROM missions WHERE status = 'completed'");
+    const avgEnergyRes = await dbGet('SELECT AVG(energy) as avg FROM check_ins');
+    const streak = await dbGet('SELECT * FROM streaks WHERE type = ?', ['daily']);
+    const totalPomodorosRes = await dbGet('SELECT COUNT(*) as count FROM pomodoro_sessions WHERE completed = 1');
     
-    const dailyActivity = await db.all(`
+    const dailyActivity = await dbAll(`
       SELECT date, 
         COUNT(DISTINCT p.id) as pomodoro_count,
         (SELECT COUNT(*) FROM wins w WHERE w.date = p.date) as win_count
       FROM pomodoro_sessions p
-      WHERE p.date >= date('now', '-30 days', 'localtime')
+      WHERE p.date >= ?
       GROUP BY date ORDER BY date
-    `);
+    `, [last30Days]);
     
-    const energyTrend = await db.all(`
+    const energyTrend = await dbAll(`
       SELECT date, energy FROM check_ins 
-      WHERE date >= date('now', '-30 days', 'localtime')
+      WHERE date >= ?
       ORDER BY date
-    `);
+    `, [last30Days]);
     
-    const categoryDist = await db.all(`
+    const categoryDist = await dbAll(`
       SELECT category, COUNT(*) as count FROM missions 
       WHERE status = 'completed'
       GROUP BY category
     `);
 
-    const gymDays = await db.get(`
+    const gymDays = await dbGet(`
       SELECT AVG(sub.pcount) as avg_pomodoros FROM (
         SELECT c.date, COUNT(p.id) as pcount
         FROM check_ins c
@@ -391,7 +411,7 @@ setupDatabase().then(() => {
       ) sub
     `);
 
-    const noGymDays = await db.get(`
+    const noGymDays = await dbGet(`
       SELECT AVG(sub.pcount) as avg_pomodoros FROM (
         SELECT c.date, COUNT(p.id) as pcount
         FROM check_ins c
@@ -401,23 +421,23 @@ setupDatabase().then(() => {
       ) sub
     `);
     
-    const heatmapData = await db.all(`
+    const heatmapData = await dbAll(`
       SELECT date, COUNT(*) as count FROM pomodoro_sessions 
-      WHERE completed = 1 AND date >= date('now', '-180 days', 'localtime')
+      WHERE completed = 1 AND date >= ?
       GROUP BY date
-    `);
+    `, [last180Days]);
 
-    const thisWeekPomodoros = await db.get(`
+    const thisWeekPomodoros = await dbGet(`
       SELECT COUNT(*) as count FROM pomodoro_sessions 
-      WHERE completed = 1 AND date >= date('now', 'weekday 0', '-7 days', 'localtime')
-    `);
+      WHERE completed = 1 AND date >= ?
+    `, [thisWeekStart]);
 
-    const lastWeekPomodoros = await db.get(`
+    const lastWeekPomodoros = await dbGet(`
       SELECT COUNT(*) as count FROM pomodoro_sessions 
       WHERE completed = 1 
-      AND date >= date('now', 'weekday 0', '-14 days', 'localtime')
-      AND date < date('now', 'weekday 0', '-7 days', 'localtime')
-    `);
+      AND date >= ?
+      AND date < ?
+    `, [lastWeekStart, thisWeekStart]);
 
     res.json({
       totalWins: totalWinsRes.count,
@@ -442,26 +462,26 @@ setupDatabase().then(() => {
   app.get('/api/history', async (req, res) => {
     const { limit = 30, offset = 0, search } = req.query;
     
-    let days = await db.all(`
+    let days = await dbAll(`
       SELECT DISTINCT date FROM (
         SELECT date FROM check_ins
         UNION SELECT date FROM missions
         UNION SELECT date FROM wins
         UNION SELECT date FROM pomodoro_sessions
-      ) ORDER BY date DESC LIMIT ? OFFSET ?
+      ) all_dates ORDER BY date DESC LIMIT ? OFFSET ?
     `, [Number(limit), Number(offset)]);
 
     const result = [];
     for (const d of days) {
-      const checkIn = await db.get('SELECT * FROM check_ins WHERE date = ?', [d.date]);
-      const missions = await db.all('SELECT * FROM missions WHERE date = ?', [d.date]);
+      const checkIn = await dbGet('SELECT * FROM check_ins WHERE date = ?', [d.date]);
+      const missions = await dbAll('SELECT * FROM missions WHERE date = ?', [d.date]);
       let wins;
       if (search) {
-        wins = await db.all('SELECT * FROM wins WHERE date = ? AND text LIKE ? ORDER BY created_at ASC', [d.date, `%${search}%`]);
+        wins = await dbAll('SELECT * FROM wins WHERE date = ? AND text LIKE ? ORDER BY created_at ASC', [d.date, `%${search}%`]);
       } else {
-        wins = await db.all('SELECT * FROM wins WHERE date = ? ORDER BY created_at ASC', [d.date]);
+        wins = await dbAll('SELECT * FROM wins WHERE date = ? ORDER BY created_at ASC', [d.date]);
       }
-      const pomodoroRes = await db.get('SELECT COUNT(*) as count FROM pomodoro_sessions WHERE date = ? AND completed = 1', [d.date]);
+      const pomodoroRes = await dbGet('SELECT COUNT(*) as count FROM pomodoro_sessions WHERE date = ? AND completed = 1', [d.date]);
       
       if (search && wins.length === 0) continue; // Filter by search if applied
 

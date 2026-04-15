@@ -124,7 +124,7 @@ export default function Settings() {
           </button>
         </div>
         <p className="text-muted text-sm mt-md">
-          Server database path is configured with <code className="text-mono text-accent">DB_PATH</code>.
+          Database connection is managed by your server environment variables.
         </p>
       </div>
     </div>
