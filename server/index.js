@@ -53,8 +53,8 @@ function dateDaysAgo(days) {
 
 async function setupDatabase() {
   // ─── Schema ────────────────────────────────────────────────
-  await dbRun(`
-    CREATE TABLE IF NOT EXISTS check_ins (
+  const schemaStatements = [
+    `CREATE TABLE IF NOT EXISTS check_ins (
       id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
       date DATE UNIQUE NOT NULL,
       energy TINYINT NOT NULL,
@@ -62,18 +62,16 @@ async function setupDatabase() {
       sleep_hours DECIMAL(4,1) NOT NULL,
       mood_note TEXT,
       created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE TABLE IF NOT EXISTS mission_pool (
+    )`,
+    `CREATE TABLE IF NOT EXISTS mission_pool (
       id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
       title TEXT NOT NULL,
       description TEXT,
       category VARCHAR(100) NOT NULL,
       difficulty TINYINT NOT NULL,
       active TINYINT(1) NOT NULL DEFAULT 1
-    );
-
-    CREATE TABLE IF NOT EXISTS missions (
+    )`,
+    `CREATE TABLE IF NOT EXISTS missions (
       id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
       date DATE NOT NULL,
       pool_id BIGINT UNSIGNED,
@@ -87,18 +85,16 @@ async function setupDatabase() {
       completed_at DATETIME NULL,
       created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (pool_id) REFERENCES mission_pool(id)
-    );
-
-    CREATE TABLE IF NOT EXISTS wins (
+    )`,
+    `CREATE TABLE IF NOT EXISTS wins (
       id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
       date DATE NOT NULL,
       text TEXT NOT NULL,
       mission_id BIGINT UNSIGNED,
       created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (mission_id) REFERENCES missions(id)
-    );
-
-    CREATE TABLE IF NOT EXISTS pomodoro_sessions (
+    )`,
+    `CREATE TABLE IF NOT EXISTS pomodoro_sessions (
       id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
       date DATE NOT NULL,
       mission_id BIGINT UNSIGNED,
@@ -107,24 +103,26 @@ async function setupDatabase() {
       started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
       ended_at DATETIME NULL,
       FOREIGN KEY (mission_id) REFERENCES missions(id)
-    );
-
-    CREATE TABLE IF NOT EXISTS streaks (
+    )`,
+    `CREATE TABLE IF NOT EXISTS streaks (
       id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
       type VARCHAR(20) UNIQUE NOT NULL,
       current_count INT NOT NULL DEFAULT 0,
       longest_count INT NOT NULL DEFAULT 0,
       last_active_date DATE NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS settings (
+    )`,
+    `CREATE TABLE IF NOT EXISTS settings (
       id TINYINT PRIMARY KEY,
       focus_duration INT NOT NULL DEFAULT 25,
       break_duration INT NOT NULL DEFAULT 5,
       name VARCHAR(255) NOT NULL DEFAULT 'Yojjal',
       goals_text TEXT
-    );
-  `);
+    )`
+  ];
+
+  for (const sql of schemaStatements) {
+    await dbRun(sql);
+  }
 
   // ─── Seed defaults ─────────────────────────────────────────
   const streakExists = await dbGet('SELECT COUNT(*) as c FROM streaks');
