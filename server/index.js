@@ -4,6 +4,7 @@ import mysql from 'mysql2/promise';
 
 const app = express();
 const PORT = Number(process.env.PORT || 3001);
+const DAILY_TASK_LIMIT = Number(process.env.DAILY_TASK_LIMIT || 10);
 
 const allowedOrigins = (process.env.CORS_ORIGIN || '')
   .split(',')
@@ -208,6 +209,34 @@ setupDatabase().then(() => {
     const { date, pool_id, title, description, category, difficulty, estimated_blocks } = req.body;
     const d = date || new Date().toISOString().split('T')[0];
     try {
+      const completedRes = await dbGet("SELECT COUNT(*) as c FROM missions WHERE date = ? AND status = 'completed'", [d]);
+      const completedToday = Number(completedRes?.c || 0);
+      if (completedToday >= DAILY_TASK_LIMIT) {
+        return res.status(409).json({ error: 'Daily mission completion limit reached' });
+      }
+
+      const lastCompletedRes = await dbGet(
+        "SELECT COALESCE(MAX(id), 0) as id FROM missions WHERE date = ? AND status = 'completed'",
+        [d]
+      );
+      const lastCompletedId = Number(lastCompletedRes?.id || 0);
+
+      const activeCycleRes = await dbGet(
+        "SELECT COUNT(*) as c FROM missions WHERE date = ? AND id > ? AND status = 'active'",
+        [d, lastCompletedId]
+      );
+      if (Number(activeCycleRes?.c || 0) > 0) {
+        return res.status(409).json({ error: 'An active mission already exists. Complete or reroll it first' });
+      }
+
+      const skippedCycleRes = await dbGet(
+        "SELECT COUNT(*) as c FROM missions WHERE date = ? AND id > ? AND status = 'skipped'",
+        [d, lastCompletedId]
+      );
+      if (Number(skippedCycleRes?.c || 0) > 3) {
+        return res.status(409).json({ error: 'Reroll limit reached for this mission cycle' });
+      }
+
       const result = await dbRun(`
         INSERT INTO missions (date, pool_id, title, description, category, difficulty, estimated_blocks)
         VALUES (?, ?, ?, ?, ?, ?, ?)

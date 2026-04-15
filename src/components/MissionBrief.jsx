@@ -1,8 +1,10 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Radar, RefreshCw, ChevronRight, Target, Shield, Zap } from 'lucide-react'
-import { getMissionToday, createMission, getCheckinToday } from '../utils/api'
+import { Radar, RefreshCw, ChevronRight, Target, Shield, Zap, CheckCircle2 } from 'lucide-react'
+import { getMissionToday, createMission, getCheckinToday, getMissions, updateMission } from '../utils/api'
 import { generateMission } from '../engine/missionEngine'
+
+const DAILY_TASK_LIMIT = Number(import.meta.env.VITE_DAILY_TASK_LIMIT || 10)
 
 export default function MissionBrief() {
   const navigate = useNavigate()
@@ -10,6 +12,7 @@ export default function MissionBrief() {
   const [checkin, setCheckin] = useState(null)
   const [loading, setLoading] = useState(true)
   const [rerolls, setRerolls] = useState(0)
+  const [tasksCompletedToday, setTasksCompletedToday] = useState(0)
 
   useEffect(() => {
     loadData()
@@ -18,16 +21,53 @@ export default function MissionBrief() {
   async function loadData() {
     setLoading(true)
     try {
-      const [missionData, checkinData] = await Promise.all([
+      const [missionData, checkinData, missionList] = await Promise.all([
         getMissionToday(),
-        getCheckinToday()
+        getCheckinToday(),
+        getMissions(200)
       ])
+
+      const today = new Date().toISOString().split('T')[0]
+      const todayMissions = (missionList || []).filter(m => {
+        if (!m?.date) return false
+        const missionDate = String(m.date).slice(0, 10)
+        return missionDate === today
+      }).sort((a, b) => Number(b.id || 0) - Number(a.id || 0))
+
+      const latestMission = todayMissions[0] || missionData || null
+      const completedCount = todayMissions.filter(m => m.status === 'completed').length
+      setTasksCompletedToday(completedCount)
+
+      let rerollsUsed = 0
+      if (latestMission && latestMission.status !== 'completed') {
+        const lastCompletedId = todayMissions
+          .filter(m => m.status === 'completed')
+          .reduce((max, m) => Math.max(max, Number(m.id || 0)), 0)
+
+        rerollsUsed = todayMissions.filter(m => Number(m.id || 0) > lastCompletedId && m.status === 'skipped').length
+      }
+      setRerolls(Math.max(0, Math.min(3, rerollsUsed)))
+
       setCheckin(checkinData)
-      if (missionData) {
-        setMission(missionData)
-      } else if (checkinData) {
+
+      if (latestMission?.status === 'completed' && completedCount < DAILY_TASK_LIMIT && checkinData) {
+        try {
+          const nextMission = await generateNewMission(checkinData)
+          setMission(nextMission)
+          setRerolls(0)
+          return
+        } catch (e) {
+          console.error(e)
+        }
+      }
+
+      if (latestMission) {
+        setMission(latestMission)
+      } else if (checkinData && completedCount < DAILY_TASK_LIMIT) {
         // Generate a new mission
-        await generateNewMission(checkinData)
+        const nextMission = await generateNewMission(checkinData)
+        setMission(nextMission)
+        setRerolls(0)
       }
     } catch(e) {
       console.error(e)
@@ -38,18 +78,23 @@ export default function MissionBrief() {
 
   async function generateNewMission(checkinData) {
     const generated = generateMission(checkinData || checkin)
-    try {
-      const saved = await createMission(generated)
-      setMission(saved)
-    } catch(e) {
-      console.error(e)
-    }
+    const saved = await createMission(generated)
+    setMission(saved)
+    return saved
   }
 
   async function handleReroll() {
-    if (rerolls >= 3) return
-    setRerolls(r => r + 1)
-    await generateNewMission(checkin)
+    if (mission?.status === 'completed' || rerolls >= 3) return
+    try {
+      await updateMission(mission.id, { status: 'skipped' })
+      await generateNewMission(checkin)
+      setRerolls(r => Math.min(3, r + 1))
+    } catch (e) {
+      if (e?.status === 409) {
+        await loadData()
+      }
+      console.error(e)
+    }
   }
 
   function handleAccept() {
@@ -114,12 +159,15 @@ export default function MissionBrief() {
 
   const difficultyLabels = { 1: 'Light', 2: 'Moderate', 3: 'Intense' }
   const difficultyColors = { 1: '#10b981', 2: '#f59e0b', 3: '#ef4444' }
+  const isCompleted = mission.status === 'completed'
+  const rerollsLeft = Math.max(0, 3 - rerolls)
+  const dailyLimitReached = tasksCompletedToday >= DAILY_TASK_LIMIT && isCompleted
 
   return (
     <div className="mission-page animate-in">
       <div className="page-header">
         <h1><Radar size={28} style={{ display: 'inline', verticalAlign: 'middle', marginRight: '0.5rem' }} />Mission Brief</h1>
-        <p>Your ONE mission for today. No list. No overwhelm.</p>
+        <p>{isCompleted ? (dailyLimitReached ? 'Daily mission cap reached. Great work.' : 'Mission completed for today. Great work.') : 'Your ONE mission for today. No list. No overwhelm.'}</p>
       </div>
 
       <div className="mission-card glass-card glass-card--static">
@@ -127,9 +175,15 @@ export default function MissionBrief() {
           <span className={`tag ${categoryColors[mission.category] || 'tag--review'}`}>
             {mission.category}
           </span>
-          <span className="mission-card__difficulty" style={{ color: difficultyColors[mission.difficulty] }}>
-            {difficultyLabels[mission.difficulty] || 'Moderate'}
-          </span>
+          {isCompleted ? (
+            <span className="tag" style={{ background: 'var(--accent-green-glow)', color: 'var(--accent-green)', fontSize: 'var(--fs-sm)', padding: '0.4rem 0.8rem' }}>
+              ✅ Completed
+            </span>
+          ) : (
+            <span className="mission-card__difficulty" style={{ color: difficultyColors[mission.difficulty] }}>
+              {difficultyLabels[mission.difficulty] || 'Moderate'}
+            </span>
+          )}
         </div>
 
         <h2 className="mission-card__title">{mission.title}</h2>
@@ -145,29 +199,52 @@ export default function MissionBrief() {
           </div>
           <div className="mission-card__meta-item">
             <Zap size={16} />
-            <span>Energy-matched to your check-in</span>
+            <span>{dailyLimitReached ? 'Daily cap reached' : 'Energy-matched to your check-in'}</span>
           </div>
         </div>
 
-        <div className="mission-card__rule">
-          <Shield size={16} />
-          <span><strong>Anti-procrastination rule:</strong> If you feel the urge to switch tabs, type what you're thinking in the win log instead. Redirect, don't resist.</span>
-        </div>
+        {isCompleted ? (
+          <div className="mission-card__rule">
+            <CheckCircle2 size={16} />
+            <span><strong>Mission status:</strong> Completed. Keep your momentum and continue logging wins in the War Room.</span>
+          </div>
+        ) : (
+          <div className="mission-card__rule">
+            <Shield size={16} />
+            <span><strong>Anti-procrastination rule:</strong> If you feel the urge to switch tabs, type what you're thinking in the win log instead. Redirect, don't resist.</span>
+          </div>
+        )}
       </div>
 
-      <div className="mission-actions">
-        <button className="btn btn-primary btn-lg" onClick={handleAccept}>
-          Accept Mission <Swords size={18} />
-        </button>
-        <button
-          className="btn btn-secondary"
-          onClick={handleReroll}
-          disabled={rerolls >= 3}
-        >
-          <RefreshCw size={16} />
-          Re-roll ({3 - rerolls} left)
-        </button>
-      </div>
+      {isCompleted ? (
+        <div className="mission-actions">
+          {!dailyLimitReached ? (
+            <button className="btn btn-success btn-lg" onClick={loadData}>
+              Get Next Mission <ChevronRight size={18} />
+            </button>
+          ) : null}
+          <button className="btn btn-success btn-lg" onClick={() => navigate('/warroom')}>
+            View War Room <ChevronRight size={18} />
+          </button>
+          <button className="btn btn-secondary" onClick={() => navigate('/dashboard')}>
+            Go to Dashboard
+          </button>
+        </div>
+      ) : (
+        <div className="mission-actions">
+          <button className="btn btn-primary btn-lg" onClick={handleAccept}>
+            Accept Mission <Swords size={18} />
+          </button>
+          <button
+            className="btn btn-secondary"
+            onClick={handleReroll}
+            disabled={rerollsLeft <= 0}
+          >
+            <RefreshCw size={16} />
+            Re-roll ({rerollsLeft} left)
+          </button>
+        </div>
+      )}
     </div>
   )
 }
