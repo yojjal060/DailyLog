@@ -5,11 +5,24 @@ import mysql from 'mysql2/promise';
 const app = express();
 const PORT = Number(process.env.PORT || 3001);
 
-const corsOrigin = process.env.CORS_ORIGIN
-  ? process.env.CORS_ORIGIN.split(',').map(origin => origin.trim()).filter(Boolean)
-  : null;
+const allowedOrigins = (process.env.CORS_ORIGIN || '')
+  .split(',')
+  .map(origin => origin.trim().replace(/^['"]|['"]$/g, ''))
+  .filter(Boolean);
 
-app.use(cors(corsOrigin ? { origin: corsOrigin } : {}));
+const allowAllOrigins = allowedOrigins.length === 0 || allowedOrigins.includes('*');
+
+const corsOptions = {
+  origin(origin, callback) {
+    if (allowAllOrigins) return callback(null, true);
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    return callback(null, false);
+  }
+};
+
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
 app.use(express.json());
 
 const missingDbEnv = ['DB_HOST', 'DB_USER', 'DB_PASSWORD', 'DB_NAME'].filter(key => !process.env[key]);
