@@ -12,6 +12,8 @@ export default function MissionBrief() {
   const [checkin, setCheckin] = useState(null)
   const [loading, setLoading] = useState(true)
   const [rerolls, setRerolls] = useState(0)
+  const [rerolling, setRerolling] = useState(false)
+  const [rerollError, setRerollError] = useState('')
   const [tasksCompletedToday, setTasksCompletedToday] = useState(0)
 
   useEffect(() => {
@@ -20,6 +22,7 @@ export default function MissionBrief() {
 
   async function loadData() {
     setLoading(true)
+    setRerollError('')
     try {
       const [missionData, checkinData, missionList] = await Promise.all([
         getMissionToday(),
@@ -46,7 +49,8 @@ export default function MissionBrief() {
 
         rerollsUsed = todayMissions.filter(m => Number(m.id || 0) > lastCompletedId && m.status === 'skipped').length
       }
-      setRerolls(Math.max(0, Math.min(3, rerollsUsed)))
+      const normalizedRerolls = Math.max(0, Math.min(3, rerollsUsed))
+      setRerolls(normalizedRerolls)
 
       setCheckin(checkinData)
 
@@ -57,6 +61,18 @@ export default function MissionBrief() {
           setRerolls(0)
           return
         } catch (e) {
+          console.error(e)
+        }
+      }
+
+      if (latestMission?.status === 'skipped' && completedCount < DAILY_TASK_LIMIT && checkinData) {
+        try {
+          const nextMission = await generateNewMission(checkinData, { excludeTitle: latestMission.title })
+          setMission(nextMission)
+          setRerolls(normalizedRerolls)
+          return
+        } catch (e) {
+          setRerollError('Could not generate a fresh mission right now. Please try reroll again.')
           console.error(e)
         }
       }
@@ -76,24 +92,55 @@ export default function MissionBrief() {
     }
   }
 
-  async function generateNewMission(checkinData) {
-    const generated = generateMission(checkinData || checkin)
+  async function generateNewMission(checkinData, options = {}) {
+    const sourceCheckin = checkinData || checkin
+    const excludedTitle = String(options.excludeTitle || '').trim()
+
+    let generated = generateMission(sourceCheckin)
+    if (excludedTitle) {
+      for (let i = 0; i < 6 && generated?.title === excludedTitle; i += 1) {
+        generated = generateMission(sourceCheckin)
+      }
+    }
+
     const saved = await createMission(generated)
     setMission(saved)
     return saved
   }
 
   async function handleReroll() {
-    if (mission?.status === 'completed' || rerolls >= 3) return
+    if (mission?.status === 'completed' || rerolls >= 3 || rerolling) return
+
+    setRerolling(true)
+    setRerollError('')
+
+    const previousMission = mission
     try {
       await updateMission(mission.id, { status: 'skipped' })
-      await generateNewMission(checkin)
+      await generateNewMission(checkin, { excludeTitle: mission?.title })
       setRerolls(r => Math.min(3, r + 1))
     } catch (e) {
       if (e?.status === 409) {
+        try {
+          if (previousMission?.id) {
+            await updateMission(previousMission.id, { status: 'active' })
+          }
+        } catch (_) {}
+
+        setRerollError('Reroll limit reached or another mission is still active.')
         await loadData()
+      } else {
+        try {
+          if (previousMission?.id) {
+            await updateMission(previousMission.id, { status: 'active' })
+          }
+        } catch (_) {}
+
+        setRerollError('Could not reroll mission. Please try again.')
       }
       console.error(e)
+    } finally {
+      setRerolling(false)
     }
   }
 
@@ -238,13 +285,19 @@ export default function MissionBrief() {
           <button
             className="btn btn-secondary"
             onClick={handleReroll}
-            disabled={rerollsLeft <= 0}
+            disabled={rerollsLeft <= 0 || rerolling}
           >
             <RefreshCw size={16} />
-            Re-roll ({rerollsLeft} left)
+            {rerolling ? 'Re-rolling...' : `Re-roll (${rerollsLeft} left)`}
           </button>
         </div>
       )}
+
+      {rerollError ? (
+        <p className="text-sm" style={{ marginTop: 'var(--space-sm)', color: 'var(--accent-red)' }}>
+          {rerollError}
+        </p>
+      ) : null}
     </div>
   )
 }

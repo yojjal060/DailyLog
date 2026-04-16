@@ -1,14 +1,68 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Swords, Play, Pause, RotateCcw, Trophy, Send, CheckCircle2, Coffee } from 'lucide-react'
-import { getMissionToday, updateMission, getWinsToday, createWin, createPomodoro, completePomodoro, updateStreak, getSettings } from '../utils/api'
+import { Swords, Play, Pause, RotateCcw, Trophy, Send, CheckCircle2, Coffee, ListTodo, Plus, Circle, Trash2, GripVertical } from 'lucide-react'
+import { getMissionToday, updateMission, getWinsToday, createWin, createPomodoro, completePomodoro, updateStreak, getSettings, getTodosToday, createTodo, updateTodo, reorderTodos, deleteTodo } from '../utils/api'
+
+const TODO_FILTERS = [
+  { key: 'all', label: 'All' },
+  { key: 'open', label: 'Open' },
+  { key: 'done', label: 'Done' }
+]
+
+function sortTodosForDisplay(items = []) {
+  return [...items].sort((a, b) => {
+    const completedDiff = Number(a.completed || 0) - Number(b.completed || 0)
+    if (completedDiff !== 0) return completedDiff
+    const orderDiff = Number(a.sort_order || 0) - Number(b.sort_order || 0)
+    if (orderDiff !== 0) return orderDiff
+    return Number(a.id || 0) - Number(b.id || 0)
+  })
+}
+
+function moveItem(list = [], fromIndex, toIndex) {
+  if (fromIndex < 0 || toIndex < 0 || fromIndex === toIndex) return [...list]
+  const copied = [...list]
+  const [moved] = copied.splice(fromIndex, 1)
+  copied.splice(toIndex, 0, moved)
+  return copied
+}
+
+function reorderWithinCompletionGroup(items = [], sourceId, targetId) {
+  const source = items.find(todo => todo.id === sourceId)
+  const target = items.find(todo => todo.id === targetId)
+
+  if (!source || !target) return null
+
+  const sourceCompleted = Number(source.completed || 0)
+  const targetCompleted = Number(target.completed || 0)
+  if (sourceCompleted !== targetCompleted) return null
+
+  const openTodos = items.filter(todo => Number(todo.completed || 0) === 0)
+  const doneTodos = items.filter(todo => Number(todo.completed || 0) === 1)
+  const activeGroup = sourceCompleted === 0 ? openTodos : doneTodos
+
+  const fromIndex = activeGroup.findIndex(todo => todo.id === sourceId)
+  const toIndex = activeGroup.findIndex(todo => todo.id === targetId)
+  if (fromIndex < 0 || toIndex < 0) return null
+
+  const reorderedGroup = moveItem(activeGroup, fromIndex, toIndex)
+  return sourceCompleted === 0 ? [...reorderedGroup, ...doneTodos] : [...openTodos, ...reorderedGroup]
+}
 
 export default function WarRoom() {
   const navigate = useNavigate()
   const [mission, setMission] = useState(null)
   const [wins, setWins] = useState([])
+  const [todos, setTodos] = useState([])
   const [winText, setWinText] = useState('')
+  const [todoText, setTodoText] = useState('')
   const [loading, setLoading] = useState(true)
+  const [todoSaving, setTodoSaving] = useState(false)
+  const [todoBusyId, setTodoBusyId] = useState(null)
+  const [todoOrderSaving, setTodoOrderSaving] = useState(false)
+  const [todoFilter, setTodoFilter] = useState('all')
+  const [draggedTodoId, setDraggedTodoId] = useState(null)
+  const [dragOverTodoId, setDragOverTodoId] = useState(null)
   const [pomodoroCount, setPomodoroCount] = useState(0)
   const [currentPomodoroId, setCurrentPomodoroId] = useState(null)
 
@@ -29,13 +83,15 @@ export default function WarRoom() {
   async function loadData() {
     setLoading(true)
     try {
-      const [missionData, winsData, settings] = await Promise.all([
+      const [missionData, winsData, settings, todosData] = await Promise.all([
         getMissionToday(),
         getWinsToday(),
-        getSettings()
+        getSettings(),
+        getTodosToday()
       ])
       setMission(missionData)
       setWins(winsData || [])
+      setTodos(sortTodosForDisplay(todosData || []))
       if (settings) {
         setFocusDuration(settings.focus_duration || 25)
         setBreakDuration(settings.break_duration || 5)
@@ -45,6 +101,117 @@ export default function WarRoom() {
       console.error(e)
     } finally {
       setLoading(false)
+    }
+  }
+
+  async function handleTodoSubmit(e) {
+    e.preventDefault()
+    const text = todoText.trim()
+    if (!text || todoSaving) return
+
+    setTodoSaving(true)
+    try {
+      const todo = await createTodo({ text })
+      setTodos(prev => sortTodosForDisplay([...prev, todo]))
+      setTodoText('')
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setTodoSaving(false)
+    }
+  }
+
+  async function handleTodoToggle(todo) {
+    if (!todo?.id || todoBusyId) return
+    setTodoBusyId(todo.id)
+    try {
+      const updated = await updateTodo(todo.id, { completed: !Number(todo.completed) })
+      setTodos(prev => sortTodosForDisplay(prev.map(t => (t.id === todo.id ? updated : t))))
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setTodoBusyId(null)
+    }
+  }
+
+  async function handleTodoDelete(todoId) {
+    if (!todoId || todoBusyId) return
+    setTodoBusyId(todoId)
+    try {
+      await deleteTodo(todoId)
+      setTodos(prev => prev.filter(t => t.id !== todoId))
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setTodoBusyId(null)
+    }
+  }
+
+  function handleTodoDragStart(e, todo) {
+    if (!todo?.id || todoBusyId || todoOrderSaving) return
+    setDraggedTodoId(todo.id)
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('text/plain', String(todo.id))
+  }
+
+  function handleTodoDragOver(e, todo) {
+    if (!draggedTodoId || draggedTodoId === todo?.id) return
+
+    const sourceTodo = todos.find(t => t.id === draggedTodoId)
+    if (!sourceTodo || Number(sourceTodo.completed || 0) !== Number(todo?.completed || 0)) return
+
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'move'
+    setDragOverTodoId(todo.id)
+  }
+
+  function handleTodoDragLeave(todo) {
+    if (dragOverTodoId === todo?.id) {
+      setDragOverTodoId(null)
+    }
+  }
+
+  function handleTodoDragEnd() {
+    setDraggedTodoId(null)
+    setDragOverTodoId(null)
+  }
+
+  async function handleTodoDrop(e, targetTodo) {
+    e.preventDefault()
+
+    if (!draggedTodoId || draggedTodoId === targetTodo?.id || todoOrderSaving || todoBusyId) {
+      handleTodoDragEnd()
+      return
+    }
+
+    const sourceTodo = todos.find(todo => todo.id === draggedTodoId)
+    if (!sourceTodo || !targetTodo) {
+      handleTodoDragEnd()
+      return
+    }
+
+    const reordered = reorderWithinCompletionGroup(todos, sourceTodo.id, targetTodo.id)
+    if (!reordered) {
+      handleTodoDragEnd()
+      return
+    }
+
+    const previousTodos = todos
+    const sourceCompleted = Number(sourceTodo.completed || 0)
+    const groupAfterReorder = reordered.filter(todo => Number(todo.completed || 0) === sourceCompleted)
+    const orderPayload = groupAfterReorder.map((todo, index) => ({ id: todo.id, sort_order: index + 1 }))
+
+    setTodos(reordered)
+    setTodoOrderSaving(true)
+    handleTodoDragEnd()
+
+    try {
+      await reorderTodos(orderPayload)
+    } catch (e) {
+      setTodos(previousTodos)
+      console.error(e)
+    } finally {
+      setTodoOrderSaving(false)
     }
   }
 
@@ -174,6 +341,27 @@ export default function WarRoom() {
   const progress = ((totalSeconds - timeLeft) / totalSeconds) * 100
   const circumference = 2 * Math.PI * 120
 
+  const openTodos = todos.filter(todo => Number(todo.completed || 0) === 0)
+  const doneTodos = todos.filter(todo => Number(todo.completed || 0) === 1)
+
+  const filteredTodos = todos.filter(todo => {
+    if (todoFilter === 'open') return Number(todo.completed || 0) === 0
+    if (todoFilter === 'done') return Number(todo.completed || 0) === 1
+    return true
+  })
+
+  const todoCountByFilter = {
+    all: todos.length,
+    open: openTodos.length,
+    done: doneTodos.length
+  }
+
+  function getTodoEmptyText() {
+    if (todoFilter === 'open') return 'No open tasks. Add one small task to get moving.'
+    if (todoFilter === 'done') return 'No completed tasks yet. Finish one task to see it here.'
+    return 'No side tasks yet. Add one small task to get moving.'
+  }
+
   if (loading) {
     return (
       <div className="warroom-page">
@@ -288,48 +476,147 @@ export default function WarRoom() {
           </div>
         </div>
 
-        {/* Win Log */}
-        <div className="warroom-wins glass-card glass-card--static">
-          <h3 className="warroom-wins__title">
-            <Trophy size={18} /> Win Log
-          </h3>
-          <p className="text-muted text-sm mb-md">
-            After each focus block, type what you accomplished. Even small wins count.
-          </p>
+        <div className="warroom-side-stack">
+          {/* Win Log */}
+          <div className="warroom-wins glass-card glass-card--static">
+            <h3 className="warroom-wins__title">
+              <Trophy size={18} /> Win Log
+            </h3>
+            <p className="text-muted text-sm mb-md">
+              After each focus block, type what you accomplished. Even small wins count.
+            </p>
 
-          <div className="warroom-wins__list">
-            {wins.length === 0 ? (
-              <div className="warroom-wins__empty">
-                No wins yet today. Start a focus block and log your first win.
-              </div>
-            ) : (
-              wins.map((win, i) => (
-                <div key={win.id || i} className="warroom-win animate-in" style={{ animationDelay: `${i * 50}ms` }}>
-                  <span className="warroom-win__bullet">🏆</span>
-                  <div>
-                    <span className="warroom-win__text">{win.text}</span>
-                    <span className="warroom-win__time text-muted text-sm">
-                      {win.created_at ? new Date(win.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
-                    </span>
-                  </div>
+            <div className="warroom-wins__list">
+              {wins.length === 0 ? (
+                <div className="warroom-wins__empty">
+                  No wins yet today. Start a focus block and log your first win.
                 </div>
-              ))
-            )}
-            <div ref={winsEndRef} />
+              ) : (
+                wins.map((win, i) => (
+                  <div key={win.id || i} className="warroom-win animate-in" style={{ animationDelay: `${i * 50}ms` }}>
+                    <span className="warroom-win__bullet">🏆</span>
+                    <div>
+                      <span className="warroom-win__text">{win.text}</span>
+                      <span className="warroom-win__time text-muted text-sm">
+                        {win.created_at ? new Date(win.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
+                      </span>
+                    </div>
+                  </div>
+                ))
+              )}
+              <div ref={winsEndRef} />
+            </div>
+
+            <form className="warroom-wins__form" onSubmit={handleWinSubmit}>
+              <input
+                className="input"
+                type="text"
+                placeholder="What did you just accomplish?"
+                value={winText}
+                onChange={e => setWinText(e.target.value)}
+              />
+              <button type="submit" className="btn btn-primary btn-icon" disabled={!winText.trim()}>
+                <Send size={18} />
+              </button>
+            </form>
           </div>
 
-          <form className="warroom-wins__form" onSubmit={handleWinSubmit}>
-            <input
-              className="input"
-              type="text"
-              placeholder="What did you just accomplish?"
-              value={winText}
-              onChange={e => setWinText(e.target.value)}
-            />
-            <button type="submit" className="btn btn-primary btn-icon" disabled={!winText.trim()}>
-              <Send size={18} />
-            </button>
-          </form>
+          {/* Daily Todo */}
+          <div className="warroom-todos glass-card glass-card--static">
+            <h3 className="warroom-todos__title">
+              <ListTodo size={18} /> Side Tasks
+            </h3>
+            <p className="text-muted text-sm mb-md">
+              Add your own to-dos beside the mission and mark them done as you go.
+            </p>
+
+            <form className="warroom-todos__form" onSubmit={handleTodoSubmit}>
+              <input
+                className="input"
+                type="text"
+                placeholder="Add a quick task..."
+                value={todoText}
+                onChange={e => setTodoText(e.target.value)}
+              />
+              <button type="submit" className="btn btn-primary btn-icon" disabled={!todoText.trim() || todoSaving}>
+                <Plus size={18} />
+              </button>
+            </form>
+
+            <div className="warroom-todos__filters">
+              {TODO_FILTERS.map(filter => (
+                <button
+                  key={filter.key}
+                  type="button"
+                  className={`warroom-filter-btn ${todoFilter === filter.key ? 'warroom-filter-btn--active' : ''}`}
+                  onClick={() => setTodoFilter(filter.key)}
+                >
+                  <span>{filter.label}</span>
+                  <span className="warroom-filter-btn__count">{todoCountByFilter[filter.key]}</span>
+                </button>
+              ))}
+            </div>
+
+            <p className="text-muted text-sm mb-md">
+              Drag tasks by the handle to reorder them inside each section.
+              {todoOrderSaving ? ' Saving order...' : ''}
+            </p>
+
+            <div className="warroom-todos__list">
+              {filteredTodos.length === 0 ? (
+                <div className="warroom-todos__empty">
+                  {getTodoEmptyText()}
+                </div>
+              ) : (
+                filteredTodos.map(todo => {
+                  const isBusy = todoBusyId === todo.id || todoOrderSaving
+                  const isDragging = draggedTodoId === todo.id
+                  const isDropTarget = dragOverTodoId === todo.id && draggedTodoId !== todo.id
+                  return (
+                    <div
+                      key={todo.id}
+                      className={`warroom-todo ${Number(todo.completed) ? 'warroom-todo--done' : ''} ${isDragging ? 'warroom-todo--dragging' : ''} ${isDropTarget ? 'warroom-todo--drop-target' : ''}`}
+                      onDragOver={e => handleTodoDragOver(e, todo)}
+                      onDrop={e => handleTodoDrop(e, todo)}
+                      onDragLeave={() => handleTodoDragLeave(todo)}
+                    >
+                      <button
+                        type="button"
+                        className="warroom-todo__drag"
+                        draggable={!isBusy}
+                        onDragStart={e => handleTodoDragStart(e, todo)}
+                        onDragEnd={handleTodoDragEnd}
+                        disabled={isBusy}
+                        aria-label="Drag to reorder task"
+                        title="Drag to reorder"
+                      >
+                        <GripVertical size={14} />
+                      </button>
+                      <button
+                        type="button"
+                        className="warroom-todo__check"
+                        onClick={() => handleTodoToggle(todo)}
+                        disabled={isBusy}
+                        aria-label={Number(todo.completed) ? 'Mark task as pending' : 'Mark task as complete'}
+                      >
+                        {Number(todo.completed) ? <CheckCircle2 size={18} /> : <Circle size={18} />}
+                      </button>
+                      <span className="warroom-todo__text">{todo.text}</span>
+                      <button
+                        type="button"
+                        className="warroom-todo__delete"
+                        onClick={() => handleTodoDelete(todo.id)}
+                        disabled={isBusy}
+                        aria-label="Delete task"
+                      >
+                        <Trash2 size={15} />
+                      </button>
+                    </div>
+                  )
+                })
+              )}
+            </div>
+          </div>
         </div>
       </div>
     </div>

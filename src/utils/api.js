@@ -39,6 +39,23 @@ export const createWin = (data) => request('/wins', {
   method: 'POST', body: JSON.stringify(data)
 });
 
+// ─── Daily Todos ───────────────────────────────────────
+export const getTodosToday = () => request('/todos/today');
+export const getTodos = (date, limit = 100) =>
+  request(`/todos${date ? `?date=${date}` : `?limit=${limit}`}`);
+export const createTodo = (data) => request('/todos', {
+  method: 'POST', body: JSON.stringify(data)
+});
+export const updateTodo = (id, data) => request(`/todos/${id}`, {
+  method: 'PATCH', body: JSON.stringify(data)
+});
+export const reorderTodos = (items) => request('/todos/reorder', {
+  method: 'PATCH', body: JSON.stringify({ items })
+});
+export const deleteTodo = (id) => request(`/todos/${id}`, {
+  method: 'DELETE'
+});
+
 // ─── Pomodoros ───────────────────────────────────────────
 export const getPomodoros = (date) => request(`/pomodoros${date ? `?date=${date}` : ''}`);
 export const createPomodoro = (data) => request('/pomodoros', {

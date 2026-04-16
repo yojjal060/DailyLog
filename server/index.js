@@ -59,6 +59,21 @@ async function dbRun(sql, params = []) {
   return result;
 }
 
+async function ensureColumnExists(tableName, columnName, definitionSql) {
+  if (!/^[a-zA-Z0-9_]+$/.test(tableName) || !/^[a-zA-Z0-9_]+$/.test(columnName)) {
+    throw new Error('Unsafe identifier provided for schema migration');
+  }
+
+  const exists = await dbGet(
+    `SELECT COUNT(*) as c FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`,
+    [tableName, columnName]
+  );
+
+  if (Number(exists?.c || 0) === 0) {
+    await dbRun(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definitionSql}`);
+  }
+}
+
 function dateDaysAgo(days) {
   const d = new Date();
   d.setUTCDate(d.getUTCDate() - days);
@@ -108,6 +123,15 @@ async function setupDatabase() {
       created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (mission_id) REFERENCES missions(id)
     )`,
+    `CREATE TABLE IF NOT EXISTS daily_todos (
+      id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+      date DATE NOT NULL,
+      text TEXT NOT NULL,
+      sort_order INT NOT NULL DEFAULT 0,
+      completed TINYINT(1) NOT NULL DEFAULT 0,
+      completed_at DATETIME NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`,
     `CREATE TABLE IF NOT EXISTS pomodoro_sessions (
       id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
       date DATE NOT NULL,
@@ -137,6 +161,9 @@ async function setupDatabase() {
   for (const sql of schemaStatements) {
     await dbRun(sql);
   }
+
+  await ensureColumnExists('daily_todos', 'sort_order', 'INT NOT NULL DEFAULT 0');
+  await dbRun('UPDATE daily_todos SET sort_order = id WHERE sort_order = 0');
 
   // ─── Seed defaults ─────────────────────────────────────────
   const streakExists = await dbGet('SELECT COUNT(*) as c FROM streaks');
@@ -290,6 +317,118 @@ setupDatabase().then(() => {
     } catch(e) {
       res.status(400).json({ error: e.message });
     }
+  });
+
+  // --- Daily Todos ---
+  app.get('/api/todos/today', async (req, res) => {
+    const today = new Date().toISOString().split('T')[0];
+    const rows = await dbAll('SELECT * FROM daily_todos WHERE date = ? ORDER BY completed ASC, sort_order ASC, id ASC', [today]);
+    res.json(rows);
+  });
+
+  app.get('/api/todos', async (req, res) => {
+    const { date, limit = 100 } = req.query;
+    if (date) {
+      const rows = await dbAll('SELECT * FROM daily_todos WHERE date = ? ORDER BY completed ASC, sort_order ASC, id ASC', [date]);
+      return res.json(rows);
+    }
+    const rows = await dbAll('SELECT * FROM daily_todos ORDER BY date DESC, completed ASC, sort_order ASC, id ASC LIMIT ?', [Number(limit)]);
+    res.json(rows);
+  });
+
+  app.post('/api/todos', async (req, res) => {
+    const { date, text } = req.body;
+    const d = date || new Date().toISOString().split('T')[0];
+    const normalizedText = String(text || '').trim();
+
+    if (!normalizedText) {
+      return res.status(400).json({ error: 'Todo text is required' });
+    }
+    if (normalizedText.length > 500) {
+      return res.status(400).json({ error: 'Todo text is too long (max 500 chars)' });
+    }
+
+    const nextSortRes = await dbGet(
+      'SELECT COALESCE(MAX(sort_order), 0) + 1 as next_sort FROM daily_todos WHERE date = ? AND completed = 0',
+      [d]
+    );
+    const nextSort = Number(nextSortRes?.next_sort || 1);
+
+    const result = await dbRun('INSERT INTO daily_todos (date, text, sort_order) VALUES (?, ?, ?)', [d, normalizedText, nextSort]);
+    const row = await dbGet('SELECT * FROM daily_todos WHERE id = ?', [result.insertId]);
+    res.json(row);
+  });
+
+  app.patch('/api/todos/reorder', async (req, res) => {
+    const items = Array.isArray(req.body?.items) ? req.body.items : null;
+    if (!items || items.length === 0) {
+      return res.status(400).json({ error: 'items array is required' });
+    }
+
+    const normalized = items.map(item => ({
+      id: Number(item?.id),
+      sort_order: Number(item?.sort_order)
+    }));
+
+    const isInvalid = normalized.some(item => !Number.isInteger(item.id) || item.id <= 0 || !Number.isInteger(item.sort_order) || item.sort_order < 0);
+    if (isInvalid) {
+      return res.status(400).json({ error: 'Each item must include valid id and sort_order integers' });
+    }
+
+    const uniqueIds = new Set(normalized.map(item => item.id));
+    if (uniqueIds.size !== normalized.length) {
+      return res.status(400).json({ error: 'Duplicate todo ids are not allowed' });
+    }
+
+    for (const item of normalized) {
+      await dbRun('UPDATE daily_todos SET sort_order = ? WHERE id = ?', [item.sort_order, item.id]);
+    }
+
+    res.json({ success: true, updated: normalized.length });
+  });
+
+  app.patch('/api/todos/:id', async (req, res) => {
+    const { text, completed, sort_order } = req.body;
+    const updates = [];
+    const params = [];
+
+    if (text !== undefined) {
+      const normalizedText = String(text || '').trim();
+      if (!normalizedText) {
+        return res.status(400).json({ error: 'Todo text is required' });
+      }
+      updates.push('text = ?');
+      params.push(normalizedText);
+    }
+
+    if (completed !== undefined) {
+      updates.push('completed = ?');
+      params.push(completed ? 1 : 0);
+      updates.push(completed ? 'completed_at = NOW()' : 'completed_at = NULL');
+    }
+
+    if (sort_order !== undefined) {
+      const normalizedSortOrder = Number(sort_order);
+      if (!Number.isInteger(normalizedSortOrder) || normalizedSortOrder < 0) {
+        return res.status(400).json({ error: 'sort_order must be a non-negative integer' });
+      }
+      updates.push('sort_order = ?');
+      params.push(normalizedSortOrder);
+    }
+
+    if (updates.length === 0) {
+      return res.status(400).json({ error: 'Nothing to update' });
+    }
+
+    params.push(req.params.id);
+    await dbRun(`UPDATE daily_todos SET ${updates.join(', ')} WHERE id = ?`, params);
+    const row = await dbGet('SELECT * FROM daily_todos WHERE id = ?', [req.params.id]);
+    res.json(row);
+  });
+
+  app.delete('/api/todos/:id', async (req, res) => {
+    await dbRun('DELETE FROM daily_todos WHERE id = ?', [req.params.id]);
+    res.json({ success: true });
   });
 
   // --- Pomodoro Sessions ---

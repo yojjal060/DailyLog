@@ -2,7 +2,7 @@ import { NavLink, useLocation } from 'react-router-dom'
 import { useEffect, useState } from 'react'
 import { 
   Crosshair, Radar, Swords, LayoutDashboard, 
-  Clock, Settings, ChevronRight
+  Clock, Settings, X
 } from 'lucide-react'
 import { getStreak, getCheckinToday, getMissionToday, getWinsToday } from '../utils/api'
 
@@ -25,7 +25,7 @@ const navItems = [
   }
 ]
 
-export default function Sidebar() {
+export default function Sidebar({ isMobile = false, isOpen = false, onNavigate, onClose }) {
   const location = useLocation()
   const [streak, setStreak] = useState({ current_count: 0, longest_count: 0 })
   const [todayStatus, setTodayStatus] = useState({ checkedIn: false, missionActive: false, winsCount: 0 })
@@ -55,7 +55,7 @@ export default function Sidebar() {
   }, [location.pathname])
 
   return (
-    <aside className="sidebar">
+    <aside className={`sidebar ${isMobile ? 'sidebar--mobile' : ''} ${isMobile && isOpen ? 'sidebar--open' : ''}`}>
       <div className="sidebar__header">
         <div className="sidebar__logo">
           <div className="sidebar__logo-icon">⚔️</div>
@@ -64,6 +64,11 @@ export default function Sidebar() {
             <span className="sidebar__logo-sub">Daily Command</span>
           </div>
         </div>
+        {isMobile ? (
+          <button type="button" className="sidebar__mobile-close" onClick={onClose} aria-label="Close navigation">
+            <X size={18} />
+          </button>
+        ) : null}
       </div>
 
       <nav className="sidebar__nav">
@@ -74,6 +79,9 @@ export default function Sidebar() {
               <NavLink
                 key={item.to}
                 to={item.to}
+                onClick={() => {
+                  if (isMobile) onNavigate?.()
+                }}
                 className={({ isActive }) => 
                   `sidebar__link ${isActive ? 'sidebar__link--active' : ''}`
                 }

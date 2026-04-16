@@ -191,9 +191,15 @@
 
 .warroom-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
   gap: var(--space-xl);
   align-items: start;
+}
+
+.warroom-side-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xl);
 }
 
 @media (max-width: 900px) {
@@ -222,6 +228,11 @@
   position: relative;
   display: inline-block;
   margin-bottom: var(--space-lg);
+}
+
+.timer-circle svg {
+  width: min(100%, 260px);
+  height: auto;
 }
 
 .timer-display {
@@ -282,7 +293,7 @@
   display: flex;
   flex-direction: column;
   height: 100%;
-  min-height: 480px;
+  min-height: 360px;
 }
 
 .warroom-wins__title {
@@ -342,6 +353,191 @@
 
 .warroom-wins__form .input {
   flex: 1;
+}
+
+/* War Room Side Tasks */
+.warroom-todos {
+  display: flex;
+  flex-direction: column;
+  min-height: 280px;
+}
+
+.warroom-todos__title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  font-size: var(--fs-md);
+  font-weight: 600;
+  margin-bottom: var(--space-xs);
+}
+
+.warroom-todos__form {
+  display: flex;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-md);
+}
+
+.warroom-todos__form .input {
+  flex: 1;
+}
+
+.warroom-todos__filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-sm);
+}
+
+.warroom-filter-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-glass);
+  color: var(--text-secondary);
+  border-radius: var(--radius-md);
+  padding: 0.35rem 0.65rem;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.warroom-filter-btn:hover {
+  color: var(--text-primary);
+  border-color: var(--border-active);
+}
+
+.warroom-filter-btn--active {
+  color: var(--text-primary);
+  border-color: var(--accent-blue);
+  background: var(--accent-blue-glow);
+}
+
+.warroom-filter-btn__count {
+  min-width: 1.35rem;
+  height: 1.35rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.08);
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono);
+}
+
+.warroom-todos__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  max-height: 240px;
+  overflow-y: auto;
+  padding-right: var(--space-xs);
+}
+
+.warroom-todos__empty {
+  text-align: center;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  padding: var(--space-lg) 0;
+}
+
+.warroom-todo {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: 0.55rem 0.65rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-glass);
+  transition: border-color var(--transition-fast), background var(--transition-fast), opacity var(--transition-fast);
+}
+
+.warroom-todo--dragging {
+  opacity: 0.5;
+}
+
+.warroom-todo--drop-target {
+  border-color: var(--accent-blue);
+  background: rgba(59, 130, 246, 0.12);
+}
+
+.warroom-todo--done {
+  border-color: rgba(16, 185, 129, 0.25);
+  background: rgba(16, 185, 129, 0.06);
+}
+
+.warroom-todo__drag {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+  flex-shrink: 0;
+}
+
+.warroom-todo__drag:active {
+  cursor: grabbing;
+}
+
+.warroom-todo__drag:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.warroom-todo__check {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.warroom-todo--done .warroom-todo__check {
+  color: var(--accent-green);
+}
+
+.warroom-todo__text {
+  flex: 1;
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+.warroom-todo--done .warroom-todo__text {
+  text-decoration: line-through;
+  color: var(--text-secondary);
+}
+
+.warroom-todo__delete {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.warroom-todo__delete:hover {
+  color: var(--accent-red);
+  background: var(--accent-red-glow);
+}
+
+.warroom-todo__check:disabled,
+.warroom-todo__delete:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* ─── Dashboard Page ──────────────────────────────────── */
@@ -534,4 +730,63 @@
   font-size: var(--fs-sm);
   color: var(--text-secondary);
   font-weight: 500;
+}
+
+@media (max-width: 760px) {
+  .mission-card {
+    padding: var(--space-lg);
+  }
+
+  .mission-card__top {
+    flex-wrap: wrap;
+    gap: var(--space-sm);
+  }
+
+  .mission-card__meta {
+    flex-direction: column;
+    gap: var(--space-sm);
+  }
+
+  .mission-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .mission-actions .btn {
+    width: 100%;
+  }
+
+  .warroom-mission .flex {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-md);
+  }
+
+  .timer-time {
+    font-size: var(--fs-3xl);
+  }
+
+  .timer-stats {
+    gap: var(--space-md);
+  }
+
+  .history-search {
+    flex-direction: column;
+  }
+
+  .history-day__header {
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: var(--space-sm);
+  }
+
+  .history-day__badges {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .gym-correlation {
+    flex-direction: column;
+    gap: var(--space-md);
+  }
 }
